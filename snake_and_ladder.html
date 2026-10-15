@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Snake &amp; Ladder</title>
+<style>
+  /* One self-contained file: no external scripts, fonts, images or audio. */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #1c3a36; color: #f3e7cc; font: 16px/1.4 system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    padding: max(16px, env(safe-area-inset-top)) 12px max(16px, env(safe-area-inset-bottom));
+  }
+  h1 { margin: 0; font: 600 2rem Georgia, 'Times New Roman', serif; }
+  .sub { margin: 0; opacity: .75; font-size: .95rem; text-align: center; }
+  #wrap { position: relative; width: min(92vw, 470px); }
+  #board {
+    display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(10, 1fr);
+    aspect-ratio: 1; border: 10px solid #5a3a22; border-radius: 6px; overflow: hidden;
+    box-shadow: inset 0 0 0 2px #2e1d10, 0 12px 24px rgba(0, 0, 0, .35);
+  }
+  .cell {
+    position: relative; min-width: 0; min-height: 0; border: 1px solid rgba(58, 42, 26, .25);
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 2px;
+  }
+  .cell .n { position: absolute; top: 2px; left: 4px; font-size: 9px; color: #3a2a1a; }
+  .m.up { color: #1f6b4a; }
+  .m.down { color: #8c2f2b; }
+  .tok {
+    width: 44%; aspect-ratio: 1; border-radius: 50%;
+    border: 2px solid #fffaf0; box-shadow: 0 2px 0 rgba(0, 0, 0, .3);
+  }
+  #start { display: flex; align-items: center; gap: 10px; min-height: 36px; font-size: .9rem; }
+  #start .tok { width: 26px; }
+  #paused {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: rgba(20, 40, 37, .82); border-radius: 6px; font: 600 1.8rem Georgia, serif;
+  }
+  #dice {
+    width: 60px; height: 60px; border-radius: 10px; background: #f4e9d0; color: #2b1d0e;
+    display: grid; place-items: center; font: 700 1.9rem Georgia, serif; box-shadow: 0 3px 0 #b8a27a;
+  }
+  #msg { min-height: 1.4em; margin: 0; text-align: center; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+  button {
+    font: inherit; font-weight: 600; padding: 10px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent; background: #d9a21b; color: #2b1d0e;
+  }
+  button.alt { background: transparent; color: #f3e7cc; border-color: rgba(243, 231, 204, .5); }
+  button:disabled { opacity: .45; cursor: default; }
+  button:focus-visible { outline: 3px solid #f3e7cc; outline-offset: 2px; }
+</style>
+</head>
+<body>
+  <h1>Snake &amp; Ladder</h1>
+  <p class="sub">பாம்பும் ஏணியும் (two players, one device). ↑ ladder, ↓ snake.</p>
+
+  <div id="wrap">
+    <div id="board"></div>
+    <div id="paused" hidden>Paused</div>
+  </div>
+  <div id="start"><span>Start</span></div>
+  <div id="dice">–</div>
+  <p id="msg" aria-live="polite"></p>
+  <div class="row">
+    <button id="roll">Roll dice</button>
+    <button id="pause" class="alt">Pause</button>
+    <button id="sound" class="alt">Sound: On</button>
+  </div>
+
+<script>
+// Ladders go from bottom to top; snakes go from head to tail.
+const LADDERS = { 1: 38, 4: 14, 9: 31, 21: 42, 28: 84, 36: 44, 51: 67, 71: 91, 80: 100 };
+const SNAKES  = { 17: 7, 54: 34, 62: 19, 64: 60, 87: 24, 93: 73, 95: 75, 98: 79 };
+
+const players = [
+  { name: 'Red',    color: '#b83227', pos: 0 },   // pos 0 = not on the board yet
+  { name: 'Indigo', color: '#3b3f8f', pos: 0 }
+];
+
+let turn = 0, busy = false, paused = false, muted = false, over = false;
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const $ = id => document.getElementById(id);
+const boardEl = $('board'), startEl = $('start'), diceEl = $('dice'), msgEl = $('msg');
+const rollBtn = $('roll'), pauseBtn = $('pause'), soundBtn = $('sound'), overlay = $('paused');
+
+// Board: squares 1-100, numbered in a zig-zag starting bottom-left.
+const cellEl = {};
+for (let n = 1; n <= 100; n++) {
+  const i = n - 1, r = Math.floor(i / 10);          // r = row, counted from the bottom
+  const c = r % 2 ? 9 - (i % 10) : i % 10;           // odd rows run right to left
+  const el = document.createElement('div');
+  el.className = 'cell';
+  el.style.gridRow = 10 - r;
+  el.style.gridColumn = c + 1;
+  el.style.background = LADDERS[n] ? '#cfe6d8' : SNAKES[n] ? '#efcdc2' : (r + c) % 2 ? '#e7d3a2' : '#f4e9d0';
+  const mark = LADDERS[n] ? '<i class="m up">↑</i>' : SNAKES[n] ? '<i class="m down">↓</i>' : '';
+  el.innerHTML = `<span class="n">${n} ${mark}</span>`;
+  cellEl[n] = el;
+  boardEl.appendChild(el);
+}
+
+function render() {
+  document.querySelectorAll('.tok').forEach(t => t.remove());
+  players.forEach(p => {
+    const t = document.createElement('div');
+    t.className = 'tok';
+    t.style.background = p.color;
+    (p.pos ? cellEl[p.pos] : startEl).appendChild(t);
+  });
+}
+
+// Simple tones made with the Web Audio API, so no sound files are needed.
+let audio = null;
+function beep(freqs, dur = 0.08) {
+  if (muted) return;
+  try {
+    audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === 'suspended') audio.resume();
+    freqs.forEach((f, i) => {
+      const t = audio.currentTime + i * dur;
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.type = 'triangle'; o.frequency.value = f;
+      g.gain.setValueAtTime(0.08, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      o.connect(g); g.connect(audio.destination);
+      o.start(t); o.stop(t + dur);
+    });
+  } catch (e) { /* no audio support: the game still plays */ }
+}
+
+// Waits `ms`, but time only passes while the game is not paused.
+function wait(ms) {
+  return new Promise(resolve => {
+    let left = ms;
+    const timer = setInterval(() => {
+      if (paused) return;
+      if ((left -= 40) <= 0) { clearInterval(timer); resolve(); }
+    }, 40);
+  });
+}
+
+function say(text) { msgEl.textContent = text; }
+
+function updateUI() {
+  rollBtn.textContent = over ? 'Play again' : 'Roll dice';
+  rollBtn.disabled = busy || paused;
+  pauseBtn.textContent = paused ? 'Resume' : 'Pause';
+  soundBtn.textContent = muted ? 'Sound: Off' : 'Sound: On';
+  overlay.hidden = !paused;
+}
+
+// Hooks for the YouTube Playables SDK. After onboarding, connect the SDK's pause/resume
+// and audio events to these two functions, using the official SDK documentation.
+function setPaused(on) { paused = on; updateUI(); }
+function setSound(on)  { muted = !on; updateUI(); }
+
+pauseBtn.onclick = () => setPaused(!paused);
+soundBtn.onclick = () => setSound(muted);
+document.addEventListener('visibilitychange', () => { if (document.hidden) setPaused(true); });
+
+async function roll() {
+  if (busy || paused || over) return;
+  busy = true; updateUI();
+  const p = players[turn];
+  const result = 1 + Math.floor(Math.random() * 6);
+
+  for (let k = 0; k < (reduceMotion ? 0 : 6); k++) {   // dice rattle
+    diceEl.textContent = 1 + Math.floor(Math.random() * 6);
+    await wait(70);
+  }
+  diceEl.textContent = result;
+  say(`${p.name} rolled ${result}.`);
+
+  if (p.pos + result > 100) {                          // must land exactly on 100
+    say(`${p.name} needs exactly ${100 - p.pos} to win. Turn passes.`);
+    await wait(900);
+  } else {
+    for (let s = 0; s < result; s++) {                 // move one square at a time
+      p.pos++; render(); beep([660], 0.05);
+      await wait(200);
+    }
+    const to = LADDERS[p.pos] ?? SNAKES[p.pos];
+    if (to !== undefined) {
+      const up = p.pos in LADDERS;
+      say(up ? `Ladder! ${p.name} climbs to ${to}.` : `Snake! ${p.name} slides down to ${to}.`);
+      beep(up ? [523, 659, 784, 1047] : [392, 330, 262, 196], 0.1);
+      await wait(500);
+      p.pos = to; render();
+      await wait(400);
+    }
+  }
+
+  if (p.pos === 100) {
+    over = true;
+    beep([523, 659, 784, 1047, 1319], 0.12);
+    say(`${p.name} wins!`);
+  } else {
+    turn = 1 - turn;
+    say(`${players[turn].name}'s turn. Roll the dice!`);
+  }
+  busy = false; updateUI();
+}
+
+function restart() {
+  players.forEach(p => { p.pos = 0; });
+  turn = 0; over = false;
+  diceEl.textContent = '–';
+  render(); updateUI();
+  say(`${players[0].name}'s turn. Roll the dice!`);
+}
+
+rollBtn.onclick = () => (over ? restart() : roll());
+render(); updateUI(); say(`${players[0].name}'s turn. Roll the dice!`);
+</script>
+</body>
+</html>
